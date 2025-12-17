@@ -32,7 +32,7 @@ CREATE TABLE ultrasonik (
 ```python
 DB_CONFIG = {
     'host': 'localhost',
-    'database': 'sensor',
+    'database': 'sen',
     'user': 'root',
     'password': ''
 }
