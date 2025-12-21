@@ -1,4 +1,4 @@
 # EWESS
 
-Your reminder for Earthquake.
+Your Earthquake reminder for us.
 
