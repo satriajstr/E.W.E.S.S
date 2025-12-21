@@ -42,3 +42,25 @@ def create_event():
             "status": "error",
             "message": str(e)
         }), 500
+@event_api.route("/api/event/<int:event_id>", methods=["DELETE"])
+def delete_event(event_id):
+    try:
+        db = get_db()
+        cursor = db.cursor()
+
+        cursor.execute(
+            "DELETE FROM quake_logs WHERE event_id = %s",
+            (event_id,)
+        )
+
+        db.commit()
+        cursor.close()
+        db.close()
+
+        return jsonify({
+            "status": "ok",
+            "deleted_event_id": event_id
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

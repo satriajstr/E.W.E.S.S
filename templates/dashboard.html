@@ -12,6 +12,9 @@
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+
+
     <style>
         body {
             background-color: #0f172a;
@@ -34,47 +37,34 @@
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
 
         <!-- REALTIME STATUS CARD -->
-        <div class="card col-span-1">
+        <div id="realtimeCard" class="card col-span-1">
             <h2 class="text-xl font-semibold mb-4">Realtime Status</h2>
 
+            <p class="mb-2">Event:
+                <span id="eventStatus" class="font-bold text-green-400">IDLE</span>
+            </p>
+
             <p class="mb-2">Shake Status:
-                <span id="shakeStatus" class="font-bold text-blue-300">Loading...</span>
+                <span id="shakeStatus" class="font-bold text-blue-300">-</span>
             </p>
 
             <p class="mb-2">Intensity:
                 <span id="intensity" class="font-bold text-green-300">0</span>
             </p>
-
-            <p class="mb-2">Duration:
-                <span id="duration" class="font-bold text-yellow-300">0</span> sec
-            </p>
-
-            <p class="text-sm">Updated:
-                <span id="timestamp" class="text-gray-300">-</span>
-            </p>
         </div>
 
-        <!-- STATISTIK CARD -->
-        <div class="card col-span-1">
-            <h2 class="text-xl font-semibold mb-4">Statistik Intensitas (24 Jam)</h2>
-
-            <p>Average:
-                <span id="avgIntensity" class="font-bold text-blue-400">0</span>
-            </p>
-
-            <p>Minimum:
-                <span id="minIntensity" class="font-bold text-green-400">0</span>
-            </p>
-
-            <p>Maximum:
-                <span id="maxIntensity" class="font-bold text-red-400">0</span>
-            </p>
+        <!-- SENSOR REALTIME CHART -->
+        <div class="card col-span-1 md:col-span-3">
+            <h2 class="text-xl font-semibold mb-4">Realtime Intensity</h2>
+            <canvas id="sensorChart"></canvas>
         </div>
 
-        <!-- CHART CARD -->
-        <div class="card col-span-1 md:col-span-1">
-            <h2 class="text-xl font-semibold mb-4">Max Intensity per Event</h2>
-            <canvas id="realtimeChart"></canvas>
+
+        <div class="card col-span-1 md:col-span-3 mt-6">
+            <h2 class="text-xl font-semibold mb-4">
+                Intensity History per Event
+            </h2>
+            <canvas id="eventHistoryChart"></canvas>
         </div>
     </div>
 
@@ -92,6 +82,7 @@
                         <th>Duration (s)</th>
                         <th>Max Intensity</th>
                         <th>Avg Intensity</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody id="logTable"></tbody>
@@ -102,126 +93,259 @@
 
     <!-- JAVASCRIPT -->
     <script>
+        /* ===============================
+           CONFIG
+        ================================ */
         const realtimeURL = "/api/realtime";
-        const statsURL = "/api/stats";
         const logsURL = "/api/logs";
+        const statsURL = "/api/stats";
 
-        // ---------------------------------
-        // FORMAT WAKTU (KONVERSI KE WIB)
-        // ---------------------------------
+        let viewingEvent = false;
+
+        /* ===============================
+           UTIL
+        ================================ */
         function formatTime(ts) {
-            const date = new Date(ts + "Z"); // pastikan dianggap UTC, lalu Chrome otomatis ubah ke lokal
+            if (!ts) return "-";
 
-            let h = String(date.getHours()).padStart(2, "0");
-            let m = String(date.getMinutes()).padStart(2, "0");
-            let s = String(date.getSeconds()).padStart(2, "0");
+            // parsing sebagai local time
+            const [date, time] = ts.split("T");
+            const [y, m, d] = date.split("-").map(Number);
+            const [hh, mm, ss] = time.split(":").map(Number);
 
-            let d = String(date.getDate()).padStart(2, "0");
-            let mo = String(date.getMonth() + 1).padStart(2, "0");
-            let y = String(date.getFullYear()).slice(-2);
+            const localDate = new Date(y, m - 1, d, hh, mm, ss);
 
-            return `${h}:${m}:${s} • ${d}/${mo}/${y}`;
+            return localDate.toLocaleTimeString("id-ID", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit"
+            }) + " • " + localDate.toLocaleDateString("id-ID");
+        }
+        function parseLocalDate(ts) {
+            if (!ts || typeof ts !== "string") return null;
+
+            // buang timezone & microseconds (AMAN untuk Chart.js)
+            const clean = ts.replace("Z", "").split(".")[0];
+
+            const [date, time] = clean.split("T");
+            if (!date || !time) return null;
+
+            const [y, m, d] = date.split("-").map(Number);
+            const [hh, mm, ss] = time.split(":").map(Number);
+
+            const result = new Date(y, m - 1, d, hh, mm, ss);
+            return isNaN(result.getTime()) ? null : result;
         }
 
-        // ---------------------------------
-        // CHART INITIALIZATION
-        // ---------------------------------
-        const ctx = document.getElementById("realtimeChart").getContext("2d");
 
-        const realtimeChart = new Chart(ctx, {
-            type: "line",
-            data: {
-                labels: [],
-                datasets: [{
-                    label: "Max Intensity",
-                    data: [],
-                    borderWidth: 2,
-                    borderColor: "rgba(59,130,246,0.8)",
-                    backgroundColor: "rgba(59,130,246,0.3)",
-                    fill: true,
-                    tension: 0.3
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: { beginAtZero: true }
+
+
+        /* ===============================
+           CHART: REALTIME SENSOR
+        ================================ */
+        const sensorChart = new Chart(
+            document.getElementById("sensorChart").getContext("2d"),
+            {
+                type: "line",
+                data: {
+                    datasets: [{
+                        label: "Realtime Intensity",
+                        data: [],
+                        borderWidth: 2,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    animation: false,
+                    scales: {
+                        x: { type: "time", time: { unit: "second" } },
+                        y: { beginAtZero: true }
+                    }
                 }
             }
-        });
+        );
 
+        /* ===============================
+           CHART: EVENT HISTORY
+        ================================ */
+        const eventHistoryChart = new Chart(
+            document.getElementById("eventHistoryChart").getContext("2d"),
+            {
+                type: "line",
+                data: {
+                    datasets: [{
+                        label: "Event Intensity",
+                        data: [],
+                        borderWidth: 2,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    scales: {
+                        x: { type: "time", time: { unit: "second" } },
+                        y: { beginAtZero: true }
+                    }
+                }
+            }
+        );
 
-        // ---------------------------------
-        // FETCH REALTIME STATUS
-        // ---------------------------------
+        /* ===============================
+           FETCH REALTIME
+        ================================ */
         async function fetchRealtime() {
-            const res = await fetch(realtimeURL);
-            const data = await res.json();
+            console.log("FETCH REALTIME CALLED");
+            try {
+                const res = await fetch(realtimeURL);
+                if (!res.ok) return;
 
-            document.getElementById("shakeStatus").textContent = data.shake ? "YES" : "NO";
-            document.getElementById("intensity").textContent = data.intensity;
-            document.getElementById("duration").textContent = data.duration;
-            document.getElementById("timestamp").textContent =
-                data.timestamp ? formatTime(data.timestamp) : "-";
+                const data = await res.json();
+
+                // ===== TEXT STATUS =====
+                document.getElementById("eventStatus").textContent =
+                    data.event_active ? "ACTIVE" : "IDLE";
+
+                document.getElementById("shakeStatus").textContent =
+                    data.shake ? "YES" : "NO";
+
+                document.getElementById("intensity").textContent =
+                    data.intensity ?? 0;
+
+                const eventStatus = document.getElementById("eventStatus");
+                const card = document.getElementById("realtimeCard");
+
+                if (data.event_active) {
+                    eventStatus.textContent = "ACTIVE";
+                    eventStatus.className = "font-bold text-red-400";
+                    card.classList.add("ring", "ring-red-500");
+                } else {
+                    eventStatus.textContent = "IDLE";
+                    eventStatus.className = "font-bold text-green-400";
+                    card.classList.remove("ring", "ring-red-500");
+                }
+
+                // ===== CHART DATA =====
+                const xDate = parseLocalDate(data.timestamp);
+                console.log("PARSED DATE:", xDate, "INT:", data.intensity);
+
+                if (xDate) {
+                    sensorChart.data.datasets[0].data.push({
+                        x: xDate,
+                        y: Number(data.intensity) || 0
+                    });
+
+                    // limit data (sliding window)
+                    if (sensorChart.data.datasets[0].data.length > 10) {
+                        sensorChart.data.datasets[0].data.shift();
+                    }
+
+                    sensorChart.update("none"); // no animation (realtime)
+                }
+
+            } catch (err) {
+                console.error("fetchRealtime error:", err);
+            }
         }
 
 
-        // ---------------------------------
-        // FETCH EVENT LOGS + UPDATE TABLE + CHART
-        // ---------------------------------
+        /* ===============================
+           FETCH LOGS (TABLE)
+           USE event_id (FK-safe)
+        ================================ */
         async function fetchLogs() {
-            const res = await fetch(logsURL);
-            const logs = await res.json();
+            if (viewingEvent) return;
 
+            const res = await fetch(logsURL);
+            if (!res.ok) return;
+
+            const logs = await res.json();
             const table = document.getElementById("logTable");
             table.innerHTML = "";
 
             logs.forEach(row => {
+                if (!row.event_id) return;
+
                 const tr = document.createElement("tr");
-                tr.classList.add("border-b", "border-gray-700");
+                tr.className = "border-b border-gray-700";
 
                 tr.innerHTML = `
-                <td class="py-2">${formatTime(row.start_time)}</td>
-                <td>${formatTime(row.end_time)}</td>
-                <td>${row.duration_sec}</td>
-                <td>${row.max_intensity}</td>
-                <td>${row.avg_intensity}</td>
-            `;
+            <td class="py-2">${formatTime(row.start_time)}</td>
+            <td>${formatTime(row.end_time)}</td>
+            <td>${row.duration_sec}</td>
+            <td>${row.max_intensity}</td>
+            <td>${row.avg_intensity}</td>
+            <td>
+                <button class="px-3 py-1 bg-blue-600 rounded text-sm hover:bg-blue-700">
+                    View
+                </button>
+            </td>
+            <td>
+                
+                <button class="delete-btn text-red-400 ml-2">Delete</button>
+             </td>
+        `;
+
+                tr.querySelector("button").onclick = () => {
+                    loadEventTimeline(row.event_id);
+                };
+                tr.querySelector(".delete-btn").onclick = async () => {
+                    if (!confirm("Hapus event ini beserta seluruh datanya?")) return;
+
+                    const res = await fetch(`/api/event/${row.event_id}`, {
+                        method: "DELETE"
+                    });
+
+                    if (res.ok) {
+                        fetchLogs(); // refresh tabel
+                        eventHistoryChart.data.datasets[0].data = [];
+                        eventHistoryChart.update();
+                        viewingEvent = false;
+                    }
+                };
+
                 table.appendChild(tr);
             });
-
-            // --- ambil 10 event terbaru, terbaru di kanan ---
-            let last10 = logs.slice(-10).reverse();
-
-            realtimeChart.data.labels = last10.map(e => formatTime(e.start_time));
-            realtimeChart.data.datasets[0].data = last10.map(e => e.max_intensity);
-
-            realtimeChart.update();
         }
 
+        /* ===============================
+           FETCH EVENT TIMELINE
+           FK: quake_event_samples.event_id
+        ================================ */
+        async function loadEventTimeline(eventId) {
+            if (!eventId) return;
 
-        // ---------------------------------
-        // FETCH STATS
-        // ---------------------------------
-        async function fetchStats() {
-            const res = await fetch(statsURL);
-            const data = await res.json();
+            viewingEvent = true;
 
-            document.getElementById("avgIntensity").textContent = data.average;
-            document.getElementById("minIntensity").textContent = data.minimum;
-            document.getElementById("maxIntensity").textContent = data.maximum;
+            const res = await fetch(`/api/event/${eventId}/timeline`);
+            if (!res.ok) return;
+
+            const json = await res.json();
+
+            eventHistoryChart.data.datasets[0].data =
+                json.samples.map(s => ({
+                    x: parseLocalDate(s.recorded_at),
+                    y: s.intensity
+                }));
+
+            eventHistoryChart.data.datasets[0].label =
+                `Event #${eventId} Intensity`;
+
+            eventHistoryChart.update();
         }
 
-
-        // intervals
+        /* ===============================
+           INTERVALS
+        ================================ */
         setInterval(fetchRealtime, 1000);
-        setInterval(fetchLogs, 2000);
-        setInterval(fetchStats, 3000);
+        setInterval(fetchLogs, 3000);
+        setInterval(fetchStats, 5000);
 
-        // initial calls
+        /* ===============================
+           INITIAL LOAD
+        ================================ */
         fetchRealtime();
         fetchLogs();
         fetchStats();
+
     </script>
 
 
